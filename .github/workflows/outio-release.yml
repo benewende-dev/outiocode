@@ -63,9 +63,14 @@ jobs:
           OPENCODE_VERSION: ${{ inputs.version }}
           OPENCODE_BUMP: ${{ inputs.bump }}
 
-      # ── Auth npm : le token reste en variable d'env, jamais écrit en clair ─
+      # ── Auth npm : on nettoie tout espace/saut de ligne du token (sinon
+      #    "not a legal HTTP header value" si le secret a été collé avec un \n) ─
       - name: Configure npm auth
-        run: echo "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" > "$HOME/.npmrc"
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          TOKEN="$(printf '%s' "$NODE_AUTH_TOKEN" | tr -d '[:space:]')"
+          echo "//registry.npmjs.org/:_authToken=${TOKEN}" > "$HOME/.npmrc"
 
       # ── CD : publication sur npm (idempotent — saute ce qui est déjà publié) ─
       - name: Publish to npm
