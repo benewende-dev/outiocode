@@ -1,0 +1,78 @@
+name: release
+run-name: "release ${{ inputs.version || format('bump {0}', inputs.bump) }}"
+
+# Pipeline CI/CD d'Outio.
+#   CI  : installe bun, vérifie que les 13 binaires se construisent (build = garde-fou).
+#   CD  : publie le méta-paquet `outio` + les binaires par plateforme sur npm.
+#
+# Déclenchement manuel depuis l'onglet Actions :
+#   - `version` : version exacte (ex. 0.1.0). REQUIS pour la toute première release
+#                 (le paquet `outio` n'existe pas encore sur npm, l'auto-bump ne peut
+#                 donc pas lire de version précédente).
+#   - `bump`    : à partir de la 2e release, laisse `version` vide et choisis
+#                 patch / minor / major — la version est déduite de npm automatiquement.
+#
+# Secret requis (Settings → Secrets and variables → Actions) :
+#   NPM_TOKEN = token npm "Granular / Automation" avec Bypass 2FA + Read/Write sur outio*
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version exacte (ex. 0.1.0) — requis pour la 1re release"
+        required: false
+        type: string
+      bump:
+        description: "Ou bump depuis la dernière version publiée"
+        required: false
+        type: choice
+        default: ""
+        options:
+          - ""
+          - patch
+          - minor
+          - major
+
+concurrency: release-${{ github.ref }}
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-bun
+
+      # ── CI ───────────────────────────────────────────────
+      # Lint informatif (non bloquant tant que le fork n'est pas 100% clean).
+      # Passe `continue-on-error: false` une fois le code propre pour en faire un vrai gate.
+      - name: Lint (oxlint)
+        continue-on-error: true
+        run: bun run lint
+
+      # ── CD : build des 13 binaires (cross-compile bun) ───
+      # Le build est le vrai garde-fou : s'il échoue, rien n'est publié.
+      - name: Build binaries
+        working-directory: packages/opencode
+        run: bun run script/build.ts
+        env:
+          OPENCODE_VERSION: ${{ inputs.version }}
+          OPENCODE_BUMP: ${{ inputs.bump }}
+
+      # ── Auth npm : le token reste en variable d'env, jamais écrit en clair ─
+      - name: Configure npm auth
+        run: echo "//registry.npmjs.org/:_authToken=\${NODE_AUTH_TOKEN}" > "$HOME/.npmrc"
+
+      # ── CD : publication sur npm (idempotent — saute ce qui est déjà publié) ─
+      - name: Publish to npm
+        working-directory: packages/opencode
+        run: bun run script/publish.ts
+        env:
+          OPENCODE_VERSION: ${{ inputs.version }}
+          OPENCODE_BUMP: ${{ inputs.bump }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
