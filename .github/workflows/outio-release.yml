@@ -23,12 +23,11 @@ on:
         required: false
         type: string
       bump:
-        description: "Ou bump depuis la dernière version publiée"
+        description: "À partir de la 2e release : incrément (ignoré si 'version' est rempli)"
         required: false
         type: choice
-        default: ""
+        default: patch
         options:
-          - ""
           - patch
           - minor
           - major
