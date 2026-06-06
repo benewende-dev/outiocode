@@ -7,6 +7,8 @@ import { fileURLToPath } from "url"
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
 
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
 async function published(name: string, version: string) {
   return (await $`npm view ${name}@${version} version`.nothrow()).exitCode === 0
 }
@@ -20,7 +22,31 @@ async function publish(dir: string, name: string, version: string) {
     return
   }
   await $`bun pm pack`.cwd(dir)
-  await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
+  // npm limite agressivement la CRÉATION de paquets neufs : en rafale on prend
+  // un E429 "rate limited exceeded". On retente avec un backoff exponentiel pour
+  // laisser la fenêtre se réinitialiser, plutôt que de faire échouer tout le run.
+  const MAX = 8
+  for (let attempt = 1; attempt <= MAX; attempt++) {
+    const res = await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir).nothrow()
+    if (res.exitCode === 0) {
+      console.log(`published ${name}@${version}`)
+      return
+    }
+    const stderr = res.stderr.toString()
+    const rateLimited = /E429|Too Many Requests|rate limited/i.test(stderr)
+    if (!rateLimited || attempt === MAX) {
+      console.error(stderr)
+      throw new Error(`failed to publish ${name}@${version} (attempt ${attempt}/${MAX})`)
+    }
+    // déjà publié entre-temps (course) → on s'arrête
+    if (await published(name, version)) {
+      console.log(`already published ${name}@${version}`)
+      return
+    }
+    const waitMs = Math.min(60_000, 5_000 * 2 ** (attempt - 1)) // 5s,10s,20s,40s,60s…
+    console.log(`rate limited on ${name}@${version}, retry ${attempt}/${MAX} in ${waitMs / 1000}s`)
+    await sleep(waitMs)
+  }
 }
 
 const binaries: Record<string, string> = {}
@@ -72,10 +98,12 @@ await Bun.file(`./dist/${pkg.name}/package.json`).write(
   ),
 )
 
-const tasks = Object.entries(binaries).map(async ([name]) => {
+// Publication SÉQUENTIELLE (pas de Promise.all) : la rafale parallèle déclenche
+// le rate limit npm sur la création de paquets neufs. Les paquets déjà publiés
+// sont sautés instantanément, donc séquentiel ne ralentit que les nouveaux.
+for (const [name] of Object.entries(binaries)) {
   await publish(`./dist/${name}`, name, binaries[name])
-})
-await Promise.all(tasks)
+}
 await publish(`./dist/${pkg.name}`, pkg.name, version)
 
 // ─── Distribution OS-level (Docker / AUR / Homebrew) ───────────────────────
